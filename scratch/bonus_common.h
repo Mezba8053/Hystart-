@@ -1,35 +1,8 @@
 #pragma once
 /*
  * bonus_common.h
- *
- * Bonus D — Variance-Adaptive RTT Threshold (VART) for HyStart++
- * ---------------------------------------------------------------
- * Problem with standard HyStart++ (RFC 9406) in wireless environments:
- *   rttThresh = clamp(lastRoundMinRtt / 8,  4 ms, 16 ms)
- *   The divisor (8) is calibrated for wired links.  In WiFi and LTE, RTT
- *   has naturally higher variance (MAC retransmissions, CSMA/CA back-off,
- *   channel fading) — causing false SS→CSS transitions even when no real
- *   queue is building.
- *
- * Our extension — VART:
- *   At each round boundary, compute the coefficient of variation (CV = σ/μ)
- *   of the raw RTT samples seen during that round.
- *
- *   adaptiveDivisor = max(MIN_DIV,  BASE_DIV / (1 + ALPHA × CV))
- *
- *   High CV (noisy channel)  → smaller divisor  → larger rttThresh
- *                            → condition harder to trigger → fewer false exits.
- *   Low  CV (stable channel) → divisor ≈ BASE_DIV (standard RFC behaviour).
- *
- *   The 3-sample weighted-average smoother from the original file is also
- *   retained so both smoothing layers work together.
- *
- * Intuition for the marker:
- *   A fixed threshold assumes all links have the same RTT noise floor.
- *   VART is self-calibrating: it lets HyStart++ remain aggressive on clean
- *   channels while backing off on noisy ones — exactly what is needed to
- *   run HyStart++ well across heterogeneous wireless topologies.
- */
+
+  */
 
 #include "ns3/log.h"
 #include "ns3/simulator.h"
@@ -43,7 +16,7 @@
 namespace ns3
 {
 
-// ============================================================================
+
 class TcpHyStartPlusAdaptive : public TcpLinuxReno
 {
   public:
@@ -72,10 +45,9 @@ class TcpHyStartPlusAdaptive : public TcpLinuxReno
     Ptr<TcpCongestionOps> Fork() override;
 
   private:
-    // RFC 9406 §4.3 constants
     Time m_minRttThresh;
     Time m_maxRttThresh;
-    uint32_t m_baseDivisor; ///< BASE_DIV  (RFC: MIN_RTT_DIVISOR = 8)
+    uint32_t m_baseDivisor; 
     uint32_t m_nRttSample;
     uint32_t m_cssGrowthDiv;
     uint32_t m_cssMaxRounds;
@@ -84,19 +56,16 @@ class TcpHyStartPlusAdaptive : public TcpLinuxReno
     double m_alpha;
     uint32_t m_minDivisor;
     double m_lastCV;
-    uint32_t m_adaptDivisor; ///< computed adaptive divisor for current round
+    uint32_t m_adaptDivisor; 
 
-    // Per-round variance accumulators
-    double m_rttSumNs;      ///< sum of raw RTT samples (ns) this round
-    double m_rttSumSqNs;    ///< sum of squares
-    uint32_t m_rttVarCount; ///< count of raw samples this round
+    double m_rttSumNs;     
+    double m_rttSumSqNs;   
+    uint32_t m_rttVarCount; 
 
-    // Algorithm state
     HyStartPhase m_phase;
     bool m_roundStarted;
     SequenceNumber32 m_windowEnd;
 
-    // RTT tracking
     Time m_lastRoundMinRtt;
     Time m_currentRoundMinRtt;
     uint32_t m_rttSampleCount;
@@ -115,7 +84,6 @@ class TcpHyStartPlusAdaptive : public TcpLinuxReno
     Time ComputeRttThresh() const;
 };
 
-// ────────────────────────────────────────────────────────────────────────────
 NS_OBJECT_ENSURE_REGISTERED(TcpHyStartPlusAdaptive);
 
 TypeId
@@ -161,7 +129,6 @@ TcpHyStartPlusAdaptive::GetTypeId()
                           UintegerValue(8),
                           MakeUintegerAccessor(&TcpHyStartPlusAdaptive::m_L),
                           MakeUintegerChecker<uint32_t>(1))
-            // VART-specific attributes
             .AddAttribute("VartAlpha",
                           "VART scaling factor for CV  (default 1.5)",
                           DoubleValue(1.5),
@@ -241,11 +208,9 @@ TcpHyStartPlusAdaptive::Fork()
     return CopyObject<TcpHyStartPlusAdaptive>(this);
 }
 
-// ── BeginNewRttRound ──────────────────────────────────────────────────────
 void
 TcpHyStartPlusAdaptive::BeginNewRttRound(Ptr<TcpSocketState> tcb)
 {
-    // 1. Compute VART adaptive divisor from this round's RTT variance
     if (m_rttVarCount >= 2)
     {
         double mean = m_rttSumNs / m_rttVarCount;
@@ -253,7 +218,6 @@ TcpHyStartPlusAdaptive::BeginNewRttRound(Ptr<TcpSocketState> tcb)
         double sd = std::sqrt(std::max(0.0, var));
         m_lastCV = (mean > 0.0) ? sd / mean : 0.0;
 
-        // Larger CV → smaller divisor → larger threshold → fewer false exits
         double floatDiv = (double)m_baseDivisor / (1.0 + m_alpha * m_lastCV);
         m_adaptDivisor = std::max(m_minDivisor, (uint32_t)std::round(floatDiv));
         m_adaptDivisor = std::min(m_adaptDivisor, m_baseDivisor);
@@ -274,16 +238,13 @@ TcpHyStartPlusAdaptive::BeginNewRttRound(Ptr<TcpSocketState> tcb)
     m_windowEnd = tcb->m_highTxMark;
 }
 
-// ── ComputeRttThresh ──────────────────────────────────────────────────────
 Time
 TcpHyStartPlusAdaptive::ComputeRttThresh() const
 {
-    // Use adaptive divisor instead of fixed RFC divisor
     Time frac = Time::FromDouble(m_lastRoundMinRtt.GetDouble() / (double)m_adaptDivisor, Time::NS);
     return std::max(m_minRttThresh, std::min(frac, m_maxRttThresh));
 }
 
-// ── PktsAcked ─────────────────────────────────────────────────────────────
 void
 TcpHyStartPlusAdaptive::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcked, const Time& rtt)
 {
@@ -306,13 +267,11 @@ TcpHyStartPlusAdaptive::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcke
         m_roundStarted = true;
     }
 
-    // Accumulate raw RTT for VART variance calculation
     double rttNs = rtt.GetDouble();
     m_rttSumNs += rttNs;
     m_rttSumSqNs += rttNs * rttNs;
     m_rttVarCount++;
 
-    // 3-sample weighted-average smoother (0.2 : 0.3 : 0.5)
     m_rttWindow.push_back(rtt);
     if (m_rttWindow.size() > RTT_WIN)
     {
@@ -331,7 +290,6 @@ TcpHyStartPlusAdaptive::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcke
     m_currentRoundMinRtt = std::min(m_currentRoundMinRtt, smoothed);
     m_rttSampleCount++;
 
-    // Round-boundary check
     if (tcb->m_lastAckedSeq >= m_windowEnd)
     {
         if (m_phase == HYSTART_CSS)
@@ -347,7 +305,6 @@ TcpHyStartPlusAdaptive::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcke
         BeginNewRttRound(tcb);
     }
 
-    // Delay checks
     if (m_phase == HYSTART_SS)
     {
         if (m_rttSampleCount >= m_nRttSample && m_currentRoundMinRtt != Time::Max() &&
@@ -373,7 +330,6 @@ TcpHyStartPlusAdaptive::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segmentsAcke
     }
 }
 
-// ── IncreaseWindow ────────────────────────────────────────────────────────
 void
 TcpHyStartPlusAdaptive::IncreaseWindow(Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
 {
@@ -413,7 +369,6 @@ TcpHyStartPlusAdaptive::IncreaseWindow(Ptr<TcpSocketState> tcb, uint32_t segment
     }
 }
 
-// ── GetSsThresh ───────────────────────────────────────────────────────────
 uint32_t
 TcpHyStartPlusAdaptive::GetSsThresh(Ptr<const TcpSocketState> tcb, uint32_t bytesInFlight)
 {
@@ -427,7 +382,6 @@ TcpHyStartPlusAdaptive::GetSsThresh(Ptr<const TcpSocketState> tcb, uint32_t byte
     return TcpLinuxReno::GetSsThresh(tcb, bytesInFlight);
 }
 
-// ── CongestionStateSet ────────────────────────────────────────────────────
 void
 TcpHyStartPlusAdaptive::CongestionStateSet(Ptr<TcpSocketState> tcb,
                                            const TcpSocketState::TcpCongState_t newState)
@@ -439,4 +393,4 @@ TcpHyStartPlusAdaptive::CongestionStateSet(Ptr<TcpSocketState> tcb,
     }
 }
 
-} // namespace ns3
+} 

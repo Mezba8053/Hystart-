@@ -1,5 +1,5 @@
 /*
- * bonus_a_hybrid.cc — Bonus A + Bonus C
+ *
  *
  * ────────────────────────────────────────
  * Topology:
@@ -10,21 +10,9 @@
  *                                                                   │
  *                                              [WiFiNode3] … [WiFiNode(N+2)]
  *
- *   Gateway (node 2) has BOTH a P2P interface AND a WiFi interface.
- *   Flows:
- *     Cross-type flows  : SrcA/SrcB  →  WiFiNode(far end)
- *       Packets physically traverse P2P links then the WiFi medium.
- *     Intra-WiFi flows  : WiFiNode(i) → WiFiNode(j)  (as baseline)
- *
+  *
  * ────────────────────────────────────────────────────────
- *   1. Per-node throughput   → per_node_throughput_hybrid.csv
- *   2. Queue size over time  → queue_size_hybrid.dat  (sampled every 200 ms)
- *   3. Jain's Fairness Index → printed + written to summary CSV
- *
- * Bonus D (VART):
- *   Uses TcpHyStartPlusAdaptive from bonus_common.h.
- *
- * Place all three files in ns-3 scratch/ directory and build with:
+  *
  *   ./ns3 run bonus_a_hybrid
  */
 
@@ -58,7 +46,6 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("BonusAHybrid");
 
-// ── Bonus C helper: Jain's Fairness Index ───────────────────────────────
 static double
 ComputeJFI(const std::vector<double>& throughputs)
 {
@@ -76,7 +63,6 @@ ComputeJFI(const std::vector<double>& throughputs)
     return (sumX2 > 0.0) ? (sumX * sumX) / (n * sumX2) : 1.0;
 }
 
-// ── Bonus C helper: periodic queue-size tracer ─────────────────────────
 static std::ofstream g_queueFile;
 
 static void
@@ -89,7 +75,6 @@ SampleQueueSize(Ptr<QueueDisc> qd)
     Simulator::Schedule(MilliSeconds(200), &SampleQueueSize, qd);
 }
 
-// ── SimResult struct ───────────────────────────────────────────────────
 struct SimResult
 {
     uint32_t variedParam;
@@ -101,11 +86,6 @@ struct SimResult
     double jfi;
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-//  RunHybridSim
-//  wiredSrcs : number of wired source nodes (default 2; gateway is node index wiredSrcs)
-//  wirelessN : number of pure-wireless nodes (not counting gateway)
-// ════════════════════════════════════════════════════════════════════════════
 static SimResult
 RunHybridSim(uint32_t wirelessN,
              uint32_t flowCount,
@@ -118,21 +98,17 @@ RunHybridSim(uint32_t wirelessN,
 {
     SimResult res{};
 
-    // ── TCP ──────────────────────────────────────────────────────────────
     Config::SetDefault("ns3::TcpL4Protocol::SocketType",
                        StringValue("ns3::TcpHyStartPlusAdaptive"));
     Config::SetDefault("ns3::TcpSocket::InitialCwnd", UintegerValue(10));
 
-    // ── Node layout ──────────────────────────────────────────────────────
-    //  Indices: 0=SrcA, 1=SrcB, 2=Gateway, 3...(2+wirelessN)=WiFi nodes
     const uint32_t WIRED_SRCS = 2;
-    const uint32_t GW_IDX = WIRED_SRCS;                // node 2
+    const uint32_t GW_IDX = WIRED_SRCS;                
     const uint32_t TOTAL = WIRED_SRCS + 1 + wirelessN; // +1 for gateway
 
     NodeContainer allNodes;
     allNodes.Create(TOTAL);
 
-    // ── P2P wired segment ────────────────────────────────────────────────
     PointToPointHelper p2p;
     p2p.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
     p2p.SetChannelAttribute("Delay", StringValue("5ms"));
@@ -140,7 +116,6 @@ RunHybridSim(uint32_t wirelessN,
     NetDeviceContainer p2pDev01 = p2p.Install(allNodes.Get(0), allNodes.Get(1));
     NetDeviceContainer p2pDev12 = p2p.Install(allNodes.Get(1), allNodes.Get(GW_IDX));
 
-    // ── WiFi segment (gateway + wireless nodes) ──────────────────────────
     double coverageSide = coverageMult * txRange;
 
     YansWifiChannelHelper channel = YansWifiChannelHelper::Default();
@@ -161,7 +136,6 @@ RunHybridSim(uint32_t wirelessN,
     WifiMacHelper mac;
     mac.SetType("ns3::AdhocWifiMac");
 
-    // WiFi node container: gateway first, then wireless nodes
     NodeContainer wifiNodes;
     wifiNodes.Add(allNodes.Get(GW_IDX));
     for (uint32_t i = WIRED_SRCS + 1; i < TOTAL; i++)
@@ -171,9 +145,7 @@ RunHybridSim(uint32_t wirelessN,
 
     NetDeviceContainer wifiDevs = wifi.Install(phy, mac, wifiNodes);
 
-    // ── Mobility ─────────────────────────────────────────────────────────
-    // Wired nodes: fixed at (-100, 0) and (-50, 0)
-    MobilityHelper mob;
+        MobilityHelper mob;
     mob.SetMobilityModel("ns3::ConstantPositionMobilityModel");
 
     Ptr<ListPositionAllocator> wiredPos = CreateObject<ListPositionAllocator>();
@@ -241,7 +213,6 @@ RunHybridSim(uint32_t wirelessN,
         Simulator::Schedule(MilliSeconds(200), &SampleQueueSize, gwQd);
     }
 
-    // ── Energy model on WiFi nodes ────────────────────────────────────────
     BasicEnergySourceHelper esHelper;
     esHelper.Set("BasicEnergySourceInitialEnergyJ", DoubleValue(100.0));
     energy::EnergySourceContainer energySrcs = esHelper.Install(wifiNodes);
@@ -253,23 +224,18 @@ RunHybridSim(uint32_t wirelessN,
     double appStart = 5.0;
     double appStop = simTime - 1.0;
 
-    // Limit flows: split between cross-type and intra-WiFi
     uint32_t actualFlows = std::min(flowCount, (uint32_t)(wifiNodes.GetN() - 1));
 
-    // Bonus C: collect per-sink app containers for per-node throughput
     std::vector<Ptr<PacketSink>> sinkPtrs;
 
     for (uint32_t i = 0; i < actualFlows; i++)
     {
         uint16_t port = 49000 + i;
 
-        // Destination: a wireless node (not the gateway itself)
-        // Index in wifiNodes: 1..(wirelessN)
         uint32_t dstWifiIdx = 1 + (i % wirelessN); // wifiNodes index
         Ptr<Node> dstNode = wifiNodes.Get(dstWifiIdx);
         Ipv4Address dstAddr = wifiIfaces.GetAddress(dstWifiIdx);
 
-        // Sink on destination wireless node
         PacketSinkHelper sinkHelper("ns3::UdpSocketFactory",
                                     InetSocketAddress(Ipv4Address::GetAny(), port));
         ApplicationContainer sinkApp = sinkHelper.Install(dstNode);
@@ -277,16 +243,13 @@ RunHybridSim(uint32_t wirelessN,
         sinkApp.Stop(Seconds(simTime));
         sinkPtrs.push_back(DynamicCast<PacketSink>(sinkApp.Get(0)));
 
-        // Source: alternate between SrcA(0) and SrcB(1) for cross-type flows,
-        //         and a WiFi node for intra-WiFi flows (every 3rd flow)
-        Ptr<Node> srcNode;
+             Ptr<Node> srcNode;
         if (i % 3 != 2)
         {
             srcNode = allNodes.Get(i % WIRED_SRCS); // SrcA or SrcB  (cross-type!)
         }
         else
         {
-            // Intra-WiFi source
             uint32_t srcWifiIdx = 1 + ((i + wirelessN / 2) % wirelessN);
             if (srcWifiIdx == dstWifiIdx)
             {
@@ -306,20 +269,18 @@ RunHybridSim(uint32_t wirelessN,
         srcApp.Stop(Seconds(appStop));
     }
 
-    // ── Flow monitor ─────────────────────────────────────────────────────
     FlowMonitorHelper fmHelper;
     Ptr<FlowMonitor> monitor = fmHelper.InstallAll();
 
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
 
-    // ── Collect results ───────────────────────────────────────────────────
     monitor->CheckForLostPackets();
     auto& flowStats = monitor->GetFlowStats();
 
     uint64_t totalTx = 0, totalRx = 0, totalLost = 0, totalRxBytes = 0;
     double totalDelay = 0.0;
-    std::vector<double> flowThroughputs; // Bonus C: for JFI
+    std::vector<double> flowThroughputs;
 
     double duration = appStop - appStart;
     for (auto& kv : flowStats)
@@ -330,7 +291,6 @@ RunHybridSim(uint32_t wirelessN,
         totalRxBytes += kv.second.rxBytes;
         totalDelay += kv.second.delaySum.GetMilliSeconds();
 
-        // Per-flow throughput
         double flowDur =
             kv.second.timeLastRxPacket.GetSeconds() - kv.second.timeFirstTxPacket.GetSeconds();
         if (flowDur > 0)
@@ -345,7 +305,6 @@ RunHybridSim(uint32_t wirelessN,
     res.dropPct = (totalTx > 0) ? (100.0 * totalLost / totalTx) : 0.0;
     res.jfi = ComputeJFI(flowThroughputs);
 
-    // WiFi node energy
     double energy = 0.0;
     for (uint32_t i = 0; i < energySrcs.GetN(); i++)
     {
@@ -357,8 +316,7 @@ RunHybridSim(uint32_t wirelessN,
     }
     res.energyJ = energy;
 
-    // Bonus C: per-node throughput CSV (written once per simulation)
-    if (traceQueue) // reuse flag to avoid writing on every sweep run
+    if (traceQueue) 
     {
         std::ofstream pnFile("per_node_throughput_hybrid.csv", std::ios::trunc);
         pnFile << "node_idx,rx_bytes,throughput_mbps\n";
@@ -381,9 +339,8 @@ RunHybridSim(uint32_t wirelessN,
     return res;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-//  main — parameter sweeps
-// ════════════════════════════════════════════════════════════════════════════
+
+
 int
 main(int argc, char* argv[])
 {
@@ -402,7 +359,6 @@ main(int argc, char* argv[])
     //           << "Topology: [SrcA]--P2P--[SrcB]--P2P--[GW]~~~WiFi~~~[WirelessNodes]\n"
     //           << "Cross-type flows: wired SrcA/SrcB → wireless destinations\n\n";
 
-    // Default sweep values
     const uint32_t DEF_NODES = 20;
     const uint32_t DEF_FLOWS = 10;
     const uint32_t DEF_PPS = 100;
@@ -430,7 +386,6 @@ main(int argc, char* argv[])
     // ── 1. Vary wireless node count ──────────────────────────────────────
     {
         std::ofstream csv = openCsv("results_hybrid_vary_nodes.csv");
-        // std::cout << "[1/4] Varying wireless node count\n";
         for (uint32_t n : nodeSweep)
         {
             bool trace = (n == nodeSweep.front()); // capture queue only on first run

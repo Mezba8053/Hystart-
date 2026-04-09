@@ -1,55 +1,6 @@
 /*
-*
- * ┌─────────────────────────────────────────────────────────────────┐
- * │  TOPOLOGY 1 — Wireless 802.11g  (STATIC)                        │
- * │                                                                 │
- * │  Grid layout  (coverageSide = coverageMult × txRange)           │
- * │                                                                 │
- * │  (0,side)  N3 ~~~ N4 ~~~ N5                                     │
- * │             |     |     |      ~~~ = WiFi ad-hoc link            │
- * │            N6 ~~~ N7 ~~~ N8    (within txRange)                 │
- * │             |     |     |                                        │
- * │  (0,0)     N9 ~~~ N0 ~~~ N1   ← fixed grid positions            │
- * │                                                                 │
- * │  Protocol stack:  App/UDP → TCP/HyStart++ → IPv4 → OLSR         │
- * │                   → WiFi MAC (AdhocWifiMac) → YansWifiPhy        │
- * │                   → 802.11g channel (RangePropagationLoss)       │
- * │                                                                 │
- * │  Flows:  OnOff UDP, src/dst chosen by half-offset pairing        │
- * │  Energy: WifiRadioEnergyModel on every node                      │
-                 │
- * └─────────────────────────────────────────────────────────────────┘
- *
- * ┌─────────────────────────────────────────────────────────────────┐
- * │  TOPOLOGY 2 — IEEE 802.15.4  (MOBILE)                           │
- * │                                                                 │
- * │  Random-waypoint mobility inside a square area                  │
- * │                                                                 │
- * │  +----[area]----+                                               │
- * │  |  N2  → → N5  |                    │
- * │  |   ↗       ↘  |   ~ = LR-WPAN link (250 kbps, ~30 m range)   │
- * │  |  N0 ~ ~ ~ N3  |                                              │
- * │  |   ↘       ↗  |                                               │
- * │  |  N1  ← ← N4  |                                               │
- * │  +---------------+                                              │
- * │                                                                 │
- * │  Protocol stack:  App/UDP → IPv6 → 6LoWPAN                      │
- * │                   → LR-WPAN MAC (CSMA/CA) → O-QPSK PHY          │
- * │                   → 2.4 GHz channel          │
- * │                                                                 │
- * │  Energy: Approx. from Zigbee CC2420 datasheet power model        │
- * │          TX=102mW  RX=116mW  Idle=3.3mW  (Vsupply=3.3V)        │
- * │                                                                 │
- * │                                                │
- * │     * └─────────────────────────────────────────────────────────────────┘
- *
- * Design extension (beyond RFC 9406):
- *   currentRoundMinRtt uses a 3-sample sliding weighted-average smoother
- *   (weights 0.2 : 0.3 : 0.5, oldest→newest).  The smoother window is
- *
- *   ./ns3 run "hystart_combined"
- *   ./ns3 run "hystart_combined --mode=wifi"
- *   ./ns3 run "hystart_combined --mode=wpan"
+
+  *   ./ns3 run "hystart_wpan_mobile"
  */
 
 #include "ns3/applications-module.h"
@@ -83,7 +34,7 @@
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("HyStartCombined");
+NS_LOG_COMPONENT_DEFINE("HyStartPlusPlusWpanMobile");
 
 class TcpHyStartPlusPlus : public TcpLinuxReno
 {
@@ -239,8 +190,9 @@ TcpHyStartPlusPlus::LogPhaseTransition(double t,
                                        uint32_t cwnd,
                                        uint32_t segSz)
 {
-    // std::cout << "HYSTART_PHASE " << t << " " << from << "->" << to << " reason=" << reason
-    //           << " cwnd=" << cwnd << " segs=" << cwnd / segSz << std::endl;
+    std::cout << "HYSTART_PHASE " << t << " " << from << "->" << to << " reason=" << reason
+              << " cwnd=" << cwnd << " segs=" << cwnd / segSz << std::endl;
+    // dedicated file: time  from  to  reason  cwnd_bytes
     // if (g_phaseFile.is_open())
     // {
     //     g_phaseFile << t << " " << from << " " << to << " " << reason << " " << cwnd << "\n";
@@ -284,11 +236,10 @@ TcpHyStartPlusPlus::BeginNewRttRound(Ptr<TcpSocketState> tcb)
     rttSampleCount = 0;
     m_rttWindow.clear();
     windowEnd = tcb->m_highTxMark;
-    // std::cout << "HYSTART_ROUND " << Simulator::Now().GetSeconds() << " phase=" <<
-    // PhaseName(phase)
-    //           << " lastMinRTT="
-    //           << (lastRoundMinRtt == Time::Max() ? -1.0 : lastRoundMinRtt.GetMilliSeconds())
-    //           << "ms windowEnd=" << windowEnd << " cwnd=" << tcb->m_cWnd << std::endl;
+    std::cout << "HYSTART_ROUND " << Simulator::Now().GetSeconds() << " phase=" << PhaseName(phase)
+              << " lastMinRTT="
+              << (lastRoundMinRtt == Time::Max() ? -1.0 : lastRoundMinRtt.GetMilliSeconds())
+              << "ms windowEnd=" << windowEnd << " cwnd=" << tcb->m_cWnd << std::endl;
 }
 
 Time
@@ -355,7 +306,10 @@ TcpHyStartPlusPlus::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segAcked, const 
         if (phase == HYSTART_CSS)
         {
             cssRoundCount++;
-           
+            std::cout << "HYSTART_CSS_ROUND " << Simulator::Now().GetSeconds()
+                      << " round=" << cssRoundCount << "/" << cssMaxRounds
+                      << " cwnd=" << tcb->m_cWnd << std::endl;
+
             if (cssRoundCount >= cssMaxRounds)
             {
                 phase = HYSTART_CA;
@@ -393,16 +347,16 @@ TcpHyStartPlusPlus::PktsAcked(Ptr<TcpSocketState> tcb, uint32_t segAcked, const 
                                    "delay_threshold_exceeded",
                                    tcb->m_cWnd,
                                    tcb->m_segmentSize);
-                // std::cout << "HYSTART_PHASE " << Simulator::Now().GetSeconds()
-                //           << " SS->CSS reason=delay_increase"
-                //           << " curMinRTT=" << currentRoundMinRtt.GetMilliSeconds()
-                //           << "ms >= target=" << delayTarget.GetMilliSeconds()
-                //           << "ms (lastMinRTT=" << lastRoundMinRtt.GetMilliSeconds()
-                //           << "ms + rttThresh=" << rttThresh.GetMilliSeconds() << "ms)"
-                //           << " cwnd=" << tcb->m_cWnd << " (" << tcb->m_cWnd / tcb->m_segmentSize
-                //           << " segs)"
-                //           << " cssBaseline=" << m_cssBaselineMinRtt.GetMilliSeconds() << "ms"
-                //           << std::endl;
+                std::cout << "HYSTART_PHASE " << Simulator::Now().GetSeconds()
+                          << " SS->CSS reason=delay_increase"
+                          << " curMinRTT=" << currentRoundMinRtt.GetMilliSeconds()
+                          << "ms >= target=" << delayTarget.GetMilliSeconds()
+                          << "ms (lastMinRTT=" << lastRoundMinRtt.GetMilliSeconds()
+                          << "ms + rttThresh=" << rttThresh.GetMilliSeconds() << "ms)"
+                          << " cwnd=" << tcb->m_cWnd << " (" << tcb->m_cWnd / tcb->m_segmentSize
+                          << " segs)"
+                          << " cssBaseline=" << m_cssBaselineMinRtt.GetMilliSeconds() << "ms"
+                          << std::endl;
             }
         }
     }
@@ -557,18 +511,7 @@ WriteWpanSingleCsv(const std::string& name,
       << r.pdrPct << "," << r.dropPct << "," << r.energyJ << "\n";
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-//  SIMULATION 1 — WiFi 802.11g Static
-// ════════════════════════════════════════════════════════════════════════════
-
 /*
- * Topology diagram (printed at runtime — see PrintWifiTopology() below)
- *
- *  Nodes placed on a uniform grid.
- *  Grid side = coverageMult × txRange metres.
- *  Every node has a WiFi ad-hoc interface.
- *  OLSR provides multi-hop routing.
- *  OnOff/UDP flows from src → dst (half-offset pairing).
  */
 static void
 PrintWifiTopologyDiagram(uint32_t n, double txRange, double coverageMult)
@@ -671,12 +614,14 @@ RunWifiStatic(uint32_t nodeCount,
     ipv4.SetBase("10.0.0.0", "255.255.0.0");
     Ipv4InterfaceContainer ifaces = ipv4.Assign(devs);
 
+    // --- Energy ---
     BasicEnergySourceHelper esHelper;
     esHelper.Set("BasicEnergySourceInitialEnergyJ", DoubleValue(100.0));
     energy::EnergySourceContainer energySrcs = esHelper.Install(nodes);
     WifiRadioEnergyModelHelper radioEnergy;
     radioEnergy.Install(devs, energySrcs);
 
+    // --- Applications: Controlled-rate TCP ---
     double appStart = 5.0;
     double appStop = simTime - 1.0;
     uint32_t actualFlows = std::min(flowCount, nodeCount / 2);
@@ -702,7 +647,6 @@ RunWifiStatic(uint32_t nodeCount,
 
         uint16_t port = 50000 + i;
 
-        // Sink
         PacketSinkHelper sinkH("ns3::TcpSocketFactory",
                                InetSocketAddress(Ipv4Address::GetAny(), port));
         auto sinkApp = sinkH.Install(nodes.Get(dst));
@@ -710,7 +654,6 @@ RunWifiStatic(uint32_t nodeCount,
         sinkApp.Stop(Seconds(simTime));
         sinks.push_back(DynamicCast<PacketSink>(sinkApp.Get(0)));
 
-        // Source - OnOff over TCP with controlled rate
         OnOffHelper onoff("ns3::TcpSocketFactory", InetSocketAddress(ifaces.GetAddress(dst), port));
         onoff.SetAttribute("PacketSize", UintegerValue(pktSize));
         onoff.SetAttribute("OnTime", StringValue(onStr.str()));
@@ -723,7 +666,6 @@ RunWifiStatic(uint32_t nodeCount,
         srcApp.Stop(Seconds(appStop));
     }
 
-    // --- Flow Monitor ---
     FlowMonitorHelper fmHelper;
     Ptr<FlowMonitor> monitor = fmHelper.InstallAll();
 
@@ -765,16 +707,11 @@ RunWifiStatic(uint32_t nodeCount,
     return res;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-//  SIMULATION 2 — IEEE 802.15.4 (LR-WPAN) Mobile
-// ════════════════════════════════════════════════════════════════════════════
-
 /*
  * IEEE 802.15.4 energy constants (CC2420 datasheet, Vsupply = 3.3 V)
  *   TX  : 17.4 mA  → 57.4 mW
  *   RX  : 18.8 mA  → 62.0 mW
  *   Idle: ~1.0 mA  →  3.3 mW
- *
  */
 static constexpr double WPAN_P_TX_W = 0.0574;   ///< TX power (W) — CC2420
 static constexpr double WPAN_P_RX_W = 0.0620;   ///< RX power (W)
@@ -860,6 +797,7 @@ RunWpanMobile(uint32_t nodeCount,
         initPos->Add(Vector(rng->GetValue(), rng->GetValue(), 0.0));
     }
 
+    // Create waypoint allocator before using it to avoid dangling pointers
     Ptr<RandomRectanglePositionAllocator> waypointAlloc =
         CreateObject<RandomRectanglePositionAllocator>();
     waypointAlloc->SetAttribute("X",
@@ -893,6 +831,7 @@ RunWpanMobile(uint32_t nodeCount,
     double appStop = simTime - 1.0;
     uint32_t actual = std::min(flowCount, nodeCount / 2);
     uint32_t offset = std::max(1u, nodeCount / 2);
+
     double reqRate = (double)pps * pktSize * 8.0;
     double dataRate = reqRate;
     std::ostringstream rateStr;
@@ -990,18 +929,17 @@ WriteRow(std::ofstream& f, const SimResult& r)
 static void
 PrintRow(const std::string& label, double val, const SimResult& r)
 {
-    // std::cout << "  " << label << "=" << std::setw(5) << val << "  tp=" << std::fixed
-    //           << std::setprecision(4) << r.throughputMbps << " Mbps  PDR=" <<
-    //           std::setprecision(1)
-    //           << r.pdrPct << "%  delay=" << std::setprecision(2) << r.avgDelayMs
-    //           << " ms  E=" << std::setprecision(3) << r.energyJ << " J\n";
+    std::cout << "  " << label << "=" << std::setw(5) << val << "  tp=" << std::fixed
+              << std::setprecision(4) << r.throughputMbps << " Mbps  PDR=" << std::setprecision(1)
+              << r.pdrPct << "%  delay=" << std::setprecision(2) << r.avgDelayMs
+              << " ms  E=" << std::setprecision(3) << r.energyJ << " J\n";
 }
 
 int
 main(int argc, char* argv[])
 {
-    std::string mode = "both"; // "wifi", "wpan", or "both"
-    std::string vary = "all";  // all | comma-list: nodes,flows,pps,coverage,speed
+    std::string mode = "wpan";
+    std::string vary = "all";
     bool singleRun = false;
     uint32_t nodeCount = 20;
     uint32_t flowCount = 10;
@@ -1016,7 +954,7 @@ main(int argc, char* argv[])
     std::string wpanCsv = "wpan_vary_speed.csv";
 
     CommandLine cmd(__FILE__);
-    cmd.AddValue("mode", "Simulation mode: wifi | wpan | both", mode);
+    cmd.AddValue("mode", "Simulation mode: wpan", mode);
     cmd.AddValue("vary", "Sweep groups: all or comma-list (nodes,flows,pps,coverage,speed)", vary);
     cmd.AddValue("singleRun", "Run one exact configuration instead of sweeps", singleRun);
     cmd.AddValue("nodes", "Node count for singleRun", nodeCount);
@@ -1038,9 +976,9 @@ main(int argc, char* argv[])
         return static_cast<char>(std::tolower(c));
     });
 
-    if (mode != "wifi" && mode != "wpan" && mode != "both")
+    if (mode != "wpan")
     {
-        std::cerr << "Invalid --mode. Use wifi, wpan, or both." << std::endl;
+        std::cerr << "Invalid --mode. This source supports wpan only." << std::endl;
         return 1;
     }
 
@@ -1067,6 +1005,7 @@ main(int argc, char* argv[])
     bool runCoverage = (vary == "all") || hasToken("coverage"); // static only
     bool runSpeed = (vary == "all") || hasToken("speed");       // mobility only
 
+    // Mode-specific sweeps: speed applies only to WPAN, coverage only to WiFi.
     if (mode == "wifi")
     {
         runSpeed = false;
@@ -1116,6 +1055,9 @@ main(int argc, char* argv[])
         if (mode == "wifi" || mode == "both")
         {
             PrintWifiTopologyDiagram(nodeCount, txRange, coverageMult);
+            std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                      << "  WiFi 802.11g STATIC — single run\n"
+                      << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
 
             SimResult r =
                 RunWifiStatic(nodeCount, flowCount, pps, pktSize, txRange, coverageMult, simTime);
@@ -1129,15 +1071,15 @@ main(int argc, char* argv[])
                                simTime,
                                r);
             PrintRow("wifi", 1.0, r);
-            // std::cout << "    " << wifiCsv << " (appended)\n";
+            std::cout << "    " << wifiCsv << " (appended)\n";
         }
 
         if (mode == "wpan" || mode == "both")
         {
             PrintWpanTopologyDiagram(nodeCount, speedMs);
-            // std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            //           << "  IEEE 802.15.4 MOBILE — single run\n"
-            //           << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                      << "  IEEE 802.15.4 MOBILE — single run\n"
+                      << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
 
             SimResult r =
                 RunWpanMobile(nodeCount, flowCount, pps, pktSize, speedMs, wpanArea, simTime);
@@ -1151,26 +1093,28 @@ main(int argc, char* argv[])
                                simTime,
                                r);
             PrintRow("wpan", 1.0, r);
-            // std::cout << "    " << wpanCsv << " (appended)\n";
+            std::cout << "    " << wpanCsv << " (appended)\n";
         }
 
-        // // std::cout << "\n===== Single run complete =====\n";
+        std::cout << "\n===== Single run complete =====\n";
         return 0;
     }
-
-    //  PART 1 — IEEE 802.11g Static
 
     if (mode == "wifi" || mode == "both")
     {
         PrintWifiTopologyDiagram(DEF_NODES, txRange, DEF_COV);
 
+        std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                  << "  WiFi 802.11g STATIC — parameter sweeps\n"
+                  << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+
         // ── 1a. Vary node count ──────────────────────────────────────────
         if (runNodes)
         {
             auto csv = OpenCsv("wifi_vary_nodes.csv", "node_count");
-            // std::cout << "\n[WiFi] Varying node count"
-            //           << " (flows=" << DEF_FLOWS << " pps=" << DEF_PPS << " cov=" << DEF_COV
-            //           << "×)\n";
+            std::cout << "\n[WiFi] Varying node count"
+                      << " (flows=" << DEF_FLOWS << " pps=" << DEF_PPS << " cov=" << DEF_COV
+                      << "×)\n";
             for (uint32_t n : nodeSweep)
             {
                 SimResult r =
@@ -1186,9 +1130,9 @@ main(int argc, char* argv[])
         if (runFlows)
         {
             auto csv = OpenCsv("wifi_vary_flows.csv", "flow_count");
-            // std::cout << "\n[WiFi] Varying flow count"
-            //           << " (nodes=" << DEF_NODES << " pps=" << DEF_PPS << " cov=" << DEF_COV
-            //           << "×)\n";
+            std::cout << "\n[WiFi] Varying flow count"
+                      << " (nodes=" << DEF_NODES << " pps=" << DEF_PPS << " cov=" << DEF_COV
+                      << "×)\n";
             for (uint32_t f : flowSweep)
             {
                 SimResult r =
@@ -1199,12 +1143,13 @@ main(int argc, char* argv[])
             }
         }
 
+        // ── 1c. Vary pps ─────────────────────────────────────────────────
         if (runPps)
         {
             auto csv = OpenCsv("wifi_vary_pps.csv", "pps");
-            // std::cout << "\n[WiFi] Varying packets/s"
-            //           << " (nodes=" << DEF_NODES << " flows=" << DEF_FLOWS << " cov=" << DEF_COV
-            //           << "×)\n";
+            std::cout << "\n[WiFi] Varying packets/s"
+                      << " (nodes=" << DEF_NODES << " flows=" << DEF_FLOWS << " cov=" << DEF_COV
+                      << "×)\n";
             for (uint32_t p : ppsSweep)
             {
                 SimResult r =
@@ -1219,9 +1164,9 @@ main(int argc, char* argv[])
         if (runCoverage)
         {
             auto csv = OpenCsv("wifi_vary_coverage.csv", "coverage_mult");
-            // std::cout << "\n[WiFi] Varying coverage area"
-            //           << " (nodes=" << DEF_NODES << " flows=" << DEF_FLOWS << " pps=" << DEF_PPS
-            //           << ")\n";
+            std::cout << "\n[WiFi] Varying coverage area"
+                      << " (nodes=" << DEF_NODES << " flows=" << DEF_FLOWS << " pps=" << DEF_PPS
+                      << ")\n";
             for (double c : covSweep)
             {
                 SimResult r =
@@ -1349,3 +1294,8 @@ main(int argc, char* argv[])
     std::cout << "\n===== All simulations complete =====\n";
     return 0;
 }
+
+/*
+ * Run command:
+ *   ./ns3 run "hystart_wpan_mobile"
+ */
